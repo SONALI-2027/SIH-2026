@@ -1,0 +1,2 @@
+type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "danger" | "secondary" };
+export function Button({ variant = "primary", className = "", ...props }: ButtonProps) { const styles = { primary: "bg-[#3978a8] text-white", danger: "bg-[#d9473f] text-white", secondary: "bg-[#ead8c1] text-[#2c2621]" }; return <button {...props} className={`tap min-h-12 rounded-2xl px-5 font-bold shadow-sm ${styles[variant]} ${className}`} />; }

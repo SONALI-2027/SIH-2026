@@ -1,0 +1,3 @@
+import { mockReports } from "@/lib/mockData";
+import { HistoryCard } from "@/components/history/HistoryCard";
+export default function HistoryPage() { return <div className="space-y-7"><header><p className="text-sm font-bold uppercase tracking-[0.18em] text-[#9b7653]">Your record</p><h1 className="font-display mt-2 text-4xl font-bold tracking-tight">My History</h1><p className="mt-3 text-[#776b60]">A clear view of the reports you have submitted.</p></header>{mockReports.length ? <div className="grid gap-4">{mockReports.map((report) => <HistoryCard key={report.id} report={report} />)}</div> : <div className="clay rounded-3xl p-10 text-center"><h2 className="font-display text-xl font-bold">You haven&apos;t submitted any reports yet.</h2></div>}</div>; }

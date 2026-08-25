@@ -1,0 +1,8 @@
+"use client";
+import { useState } from "react";
+import { VOLUNTEER_CATEGORIES } from "@/lib/constants";
+import { submitVolunteerRequest } from "@/lib/api/volunteers";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
+export function VolunteerForm() { const [form, setForm] = useState({ name: "", location: "", category: VOLUNTEER_CATEGORIES[0] }); const [message, setMessage] = useState(""); const update = (key: string, value: string) => setForm((current) => ({ ...current, [key]: value })); async function handleSubmit(event: React.FormEvent<HTMLFormElement>) { event.preventDefault(); await submitVolunteerRequest(form); setMessage("Your volunteer request has been recorded."); } return <form onSubmit={handleSubmit} className="space-y-5"><div className="grid gap-5 md:grid-cols-2"><Input label="Name" placeholder="Your name" required value={form.name} onChange={(event) => update("name", event.target.value)} /><div><Input label="Location" placeholder="Your current location" required value={form.location} onChange={(event) => update("location", event.target.value)} /><button type="button" className="mt-2 text-sm font-bold text-[#3978a8]" onClick={() => setMessage("Location detection will be connected later.")}>Use my location</button></div></div><Select label="How would you like to volunteer?" options={VOLUNTEER_CATEGORIES} value={form.category} onChange={(event) => update("category", event.target.value)} /><Button type="submit" className="w-full text-lg">Send Volunteer Request</Button>{message && <p role="status" className="rounded-2xl bg-[#edf7ef] p-4 font-semibold text-[#356b51]">{message}</p>}</form>; }
