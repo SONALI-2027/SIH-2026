@@ -1,0 +1,26 @@
+name: Merge Conflict Check
+
+on:
+  pull_request:
+    types: [synchronize, opened, reopened, edited]
+
+jobs:
+  check-conflicts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify Mergeability with Target Branch
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          # Determine the common ancestor
+          BASE_COMMIT=$(git merge-base origin/${{ github.base_ref }} HEAD)
+          # Perform a dry-run merge check
+          if ! git merge-tree $BASE_COMMIT origin/${{ github.base_ref }} HEAD > /dev/null 2>&1; then
+            echo "::error::Merge conflicts detected between this branch and origin/${{ github.base_ref }}. Please rebase or merge origin/${{ github.base_ref }} into your branch."
+            exit 1
+          fi
+          echo "No merge conflicts detected. Branch is mergeable."
