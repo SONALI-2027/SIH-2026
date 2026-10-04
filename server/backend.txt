@@ -1,0 +1,645 @@
+================================================================================
+  SIH-2026 DISASTER MANAGEMENT PLATFORM — BACKEND DOCUMENTATION
+================================================================================
+  Generated: 2026-08-25
+  Accurate as of the current codebase snapshot.
+================================================================================
+
+
+1. OVERVIEW
+================================================================================
+
+The SIH-2026 backend is a real-time disaster management API that enables
+citizens to submit disaster reports, authorities to review and dispatch
+resources, and all connected clients to receive live updates via WebSockets.
+
+TECH STACK:
+  - Runtime:        Node.js (v24+) with TypeScript
+  - Framework:      Express 5 (HTTP) + Socket.IO 4 (WebSockets)
+  - Database:       PostgreSQL (Supabase) with PostGIS extension
+  - DB Client:      pg (raw SQL via connection pool — no ORM at runtime)
+  - Schema Mgmt:    Prisma 7 (migrations and seeding only)
+  - File Upload:    Multer (multipart/form-data disk storage)
+  - Dev Runner:     tsx (TypeScript execution without build step)
+
+MAIN COMPONENTS:
+  server/src/server.ts          Entry point — Express app, HTTP server, Socket.IO
+  server/src/db.ts              PostgreSQL connection pool singleton (pg.Pool)
+  server/src/socket.ts          Socket.IO connection/disconnection handlers
+  server/src/middlewares/       Express middleware (auth)
+  server/src/routes/            Express routers (health, reports, incidents,
+                                allocations, resources)
+  server/src/controllers/       Request handlers (validation, response, Socket.IO emit)
+  server/src/services/          Business logic (DB queries, transactions)
+  server/src/utils/geo.ts       PostGIS helper functions (insert points, spatial queries)
+  server/uploads/               Photo upload storage directory
+  server/scripts/simulate.ts    End-to-end workflow simulation script
+
+
+2. API ENDPOINTS
+================================================================================
+
+All endpoints are prefixed with /api. JSON responses unless noted.
+
+────────────────────────────────────────────────────────────────────────────────
+2.1  GET /api/health/health
+────────────────────────────────────────────────────────────────────────────────
+  Auth:           None
+  Description:    Server liveness check.
+  Request:        No parameters.
+  Success (200):  { "status": "ok" }
+  Errors:         None expected.
+
+────────────────────────────────────────────────────────────────────────────────
+2.2  POST /api/reports
+────────────────────────────────────────────────────────────────────────────────
+  Auth:           None (citizen endpoint)
+  Content-Type:   multipart/form-data
+  Description:    Submit a new disaster report. Triggers trust-layer auto-
+                  verification if 3+ distinct sessions report the same type
+                  within 200m / 15 minutes.
+
+  Request Fields:
+    session_id    string    Required. Client device identifier.
+    type          string    Required. One of: flood, cyclone, landslide,
+                            medical, fire, other.
+    lat           string    Required. Latitude (-90 to 90). Parsed to float.
+    lng           string    Required. Longitude (-180 to 180). Parsed to float.
+    description   string    Optional. Max 500 characters.
+    photo         file      Optional. Image file. Saved to server/uploads/.
+
+  Success (201):
+    {
+      "report": {
+        "id": "uuid",
+        "session_id": "...",
+        "type": "flood",
+        "description": "...",
+        "photo_url": "/uploads/photo-1234567890.png",
+        "status": "unverified",
+        "created_at": "2026-08-25T..."
+      },
+      "verifiedReports": [...]    // Present only when auto-verification triggers
+    }
+
+  Socket.IO Events Emitted:
+    "report_created"    — payload: the report object
+    "report_verified"   — payload: array of verified reports (when triggered)
+
+  Errors:
+    400  Missing required fields: session_id, type, lat, lng
+    400  Invalid type. Must be one of: flood, cyclone, ...
+    400  Invalid lat: must be a number between -90 and 90
+    400  Invalid lng: must be a number between -180 and 180
+    400  Description must be 500 characters or fewer
+
+────────────────────────────────────────────────────────────────────────────────
+2.3  GET /api/reports?session_id=<session_id>
+────────────────────────────────────────────────────────────────────────────────
+  Auth:           None (citizen endpoint)
+  Description:    Fetch all reports submitted by a specific session ("Your
+                  Reports" citizen view).
+
+  Query Params:
+    session_id    string    Required.
+
+  Success (200):
+    [
+      {
+        "id": "uuid",
+        "session_id": "...",
+        "type": "flood",
+        "description": "...",
+        "photo_url": "/uploads/...",
+        "status": "verified",
+        "created_at": "...",
+        "location_wkt": "POINT(72.8777 19.076)"
+      }
+    ]
+
+  Errors:
+    400  Missing session_id query parameter
+    500  Internal server error
+
+────────────────────────────────────────────────────────────────────────────────
+2.4  GET /api/incidents
+────────────────────────────────────────────────────────────────────────────────
+  Auth:           None
+  Description:    Fetch all reports (authority overview). Returns location as
+                  Well-Known Text (WKT).
+
+  Success (200):
+    [
+      {
+        "id": "uuid",
+        "session_id": "...",
+        "type": "flood",
+        "description": "...",
+        "photo_url": "...",
+        "status": "verified",
+        "created_at": "...",
+        "location_wkt": "POINT(72.8777 19.076)"
+      }
+    ]
+
+  Errors:
+    500  Internal server error
+
+────────────────────────────────────────────────────────────────────────────────
+2.5  GET /api/incidents/:id/shortlist
+────────────────────────────────────────────────────────────────────────────────
+  Auth:           None
+  Description:    Get the top 3 nearest compatible resources for a verified
+                  incident. Resources must have available capacity and support
+                  the incident's disaster type in their disaster_types array.
+                  Distance is computed via PostGIS ST_Distance on geography.
+
+  Path Params:
+    id            string    Report UUID.
+
+  Success (200):
+    [
+      {
+        "id": "uuid",
+        "name": "Mumbai Rescue Alpha",
+        "type": "rescue_team",
+        "capacity_total": 20,
+        "capacity_used": 3,
+        "disaster_types": ["flood", "cyclone"],
+        "status": "available",
+        "distance_meters": 1234.56
+      }
+    ]
+
+  Errors:
+    404  Report not found
+    400  Report is not verified
+    500  Internal server error
+
+────────────────────────────────────────────────────────────────────────────────
+2.6  POST /api/allocations/confirm
+────────────────────────────────────────────────────────────────────────────────
+  Auth:           Required. Header: x-authority-token: demo-authority-token
+  Content-Type:   application/json
+  Description:    Confirm a resource dispatch to an incident. Creates an
+                  Allocation record, transitions the report to in_progress,
+                  increments the resource's capacity_used, and sets the
+                  resource status to en_route. All within a SQL transaction.
+
+  Request Body:
+    {
+      "report_id": "uuid",
+      "resource_id": "uuid"
+    }
+
+  Success (201):
+    {
+      "allocation": { "id", "report_id", "resource_id", "status": "confirmed", ... },
+      "report":     { "id", "status": "in_progress", ... },
+      "resource":   { "id", "status": "en_route", "capacity_used": N, ... }
+    }
+
+  Socket.IO Events Emitted:
+    "allocation_confirmed" — payload: { allocation, report, resource }
+
+  Errors:
+    401  Unauthorized (missing or wrong x-authority-token)
+    400  Missing required fields: report_id, resource_id
+    404  Report not found
+    400  Report already in progress or resolved
+    400  Report is not verified
+    404  Resource not found
+    400  Resource is not available
+    400  Resource has no available capacity
+    500  Internal server error
+
+  Guards:
+    - Duplicate check: rejects if report is already in_progress or resolved.
+    - Capacity double-check inside transaction with SELECT FOR UPDATE to
+      prevent race conditions.
+
+────────────────────────────────────────────────────────────────────────────────
+2.7  PUT /api/resources/:id/status
+────────────────────────────────────────────────────────────────────────────────
+  Auth:           Required. Header: x-authority-token: demo-authority-token
+  Content-Type:   application/json
+  Description:    Update a resource's operational status. Enforces valid state
+                  transitions only.
+
+  Path Params:
+    id            string    Resource UUID.
+
+  Request Body:
+    { "status": "en_route" | "at_scene" | "available" }
+
+  Valid Transitions:
+    available  -->  en_route    (dispatched)
+    en_route   -->  at_scene    (arrived)
+    at_scene   -->  available   (freed up)
+
+  Success (200):
+    { "id", "name", "type", "capacity_total", "capacity_used", "status", ... }
+
+  Socket.IO Events Emitted:
+    "resource_status_updated" — payload: updated resource object
+
+  Errors:
+    401  Unauthorized
+    400  Missing required field: status
+    400  Invalid status. Must be one of: en_route, at_scene, available
+    404  Resource not found
+    400  Invalid status transition: <current> → <requested>
+    500  Internal server error
+
+────────────────────────────────────────────────────────────────────────────────
+2.8  POST /api/incidents/:id/resolve
+────────────────────────────────────────────────────────────────────────────────
+  Auth:           Required. Header: x-authority-token: demo-authority-token
+  Description:    Resolve an in-progress incident. Updates report to resolved,
+                  marks the active allocation as resolved, decrements the
+                  resource's capacity_used, and resets resource to available.
+                  All within a SQL transaction.
+
+  Path Params:
+    id            string    Report UUID.
+
+  Success (200):
+    {
+      "report":     { "id", "status": "resolved", ... },
+      "allocation": { "id", "status": "resolved", ... },
+      "resource":   { "id", "status": "available", "capacity_used": N-1, ... }
+    }
+
+  Socket.IO Events Emitted:
+    "incident_resolved" — payload: { report, allocation, resource }
+
+  Errors:
+    401  Unauthorized
+    404  Report not found
+    400  Incident already resolved
+    400  Report is not in_progress
+    500  Internal server error
+
+  Guards:
+    - Rejects if already resolved.
+    - Only decrements capacity_used if it is currently > 0 (prevents negatives).
+    - Uses GREATEST(capacity_used - 1, 0) as additional safety net.
+
+────────────────────────────────────────────────────────────────────────────────
+2.9  GET /api/resources
+────────────────────────────────────────────────────────────────────────────────
+  ** NOT YET IMPLEMENTED **
+
+  This endpoint is listed in the requirements but does not currently exist
+  in the codebase. The resources router (server/src/routes/resources.ts) only
+  registers PUT /:id/status. A GET / handler would need to be added to list
+  all resources.
+
+
+3. SOCKET.IO EVENTS
+================================================================================
+
+The Socket.IO server is attached to the same HTTP server on the same port.
+CORS is configured with origin: '*'.
+
+CONNECTION EVENTS:
+  - On connect:    logs "Client connected: <socket.id>"
+  - On disconnect: logs "Client disconnected: <socket.id> (<reason>)"
+  - On "test":     echoes the payload back to the sender (debug utility)
+
+BROADCAST EVENTS (server → all clients):
+
+  Event Name                Trigger                         Payload
+  ─────────────────────     ───────────────────────────     ────────────────────
+  report_created            POST /api/reports succeeds      Report object
+                                                            {id, session_id,
+                                                             type, description,
+                                                             photo_url, status,
+                                                             created_at}
+
+  report_verified           Trust layer auto-verifies       Array of Report
+                            a cluster (>=3 sessions)        objects (all reports
+                                                            in the cluster)
+
+  allocation_confirmed      POST /api/allocations/confirm   {allocation, report,
+                            succeeds                        resource}
+
+  resource_status_updated   PUT /api/resources/:id/status   Updated Resource
+                            succeeds                        object {id, name,
+                                                            type, status, ...}
+
+  incident_resolved         POST /api/incidents/:id/resolve {report, allocation,
+                            succeeds                        resource}
+
+
+4. DATABASE SCHEMA
+================================================================================
+
+Database: PostgreSQL (Supabase) with PostGIS extension enabled.
+All tables use double-quoted identifiers (Prisma convention).
+
+────────────────────────────────────────────────────────────────────────────────
+4.1  Table: "Report"
+────────────────────────────────────────────────────────────────────────────────
+  Column        Type                          Notes
+  ──────        ────                          ─────
+  id            TEXT (UUID)                   PK. Generated via gen_random_uuid()
+  session_id    TEXT                          Not null. Client device ID.
+  type          "ReportType" enum             flood|cyclone|landslide|medical|
+                                              fire|other
+  description   TEXT                          Nullable.
+  photo_url     TEXT                          Nullable. Relative URL path.
+  location      geometry(Point,4326)          PostGIS column. Nullable.
+                                              Added via manual migration, not
+                                              in Prisma schema directly.
+                                              GIST index applied.
+  status        "ReportStatus" enum           unverified|verified|in_progress|
+                                              resolved. Default: unverified.
+  created_at    TIMESTAMP WITH TIME ZONE      Default: NOW()
+
+────────────────────────────────────────────────────────────────────────────────
+4.2  Table: "Resource"
+────────────────────────────────────────────────────────────────────────────────
+  Column          Type                        Notes
+  ──────          ────                        ─────
+  id              TEXT (UUID)                 PK. Generated via gen_random_uuid()
+  name            TEXT                        Not null. Human-readable name.
+  type            "ResourceType" enum         shelter|rescue_team|medical_van|
+                                              boat|food_stock|ambulance|
+                                              fire_engine
+  capacity_total  INTEGER                     Total capacity units.
+  capacity_used   INTEGER                     Currently used units. Default: 0.
+  location        geometry(Point,4326)        PostGIS column. Nullable.
+                                              GIST index applied.
+  status          "ResourceStatus" enum       available|en_route|at_scene.
+                                              Default: available.
+  disaster_types  TEXT[]                      Array of supported disaster types.
+  created_at      TIMESTAMP WITH TIME ZONE    Default: NOW()
+
+────────────────────────────────────────────────────────────────────────────────
+4.3  Table: "Allocation"
+────────────────────────────────────────────────────────────────────────────────
+  Column          Type                        Notes
+  ──────          ────                        ─────
+  id              TEXT (UUID)                 PK. Generated via gen_random_uuid()
+  report_id       TEXT                        FK → Report.id. Not null.
+  resource_id     TEXT                        FK → Resource.id. Not null.
+  status          "AllocationStatus" enum     recommended|confirmed|en_route|
+                                              at_scene|resolved.
+                                              Default: recommended.
+  recommended_at  TIMESTAMP WITH TIME ZONE    Default: NOW()
+  confirmed_at    TIMESTAMP WITH TIME ZONE    Nullable.
+  confirmed_by    TEXT                        Nullable. Authority identifier.
+  created_at      TIMESTAMP WITH TIME ZONE    Default: NOW()
+
+  Constraints:
+    - UNIQUE(report_id, resource_id)
+    - FK report_id → Report(id)
+    - FK resource_id → Resource(id)
+
+
+5. SETUP INSTRUCTIONS
+================================================================================
+
+PREREQUISITES:
+  - Node.js v24+
+  - npm
+  - PostgreSQL database with PostGIS enabled (e.g., Supabase)
+
+STEP 1: Install Dependencies
+  cd server
+  npm install
+
+STEP 2: Configure Environment Variables
+  Create or edit server/.env:
+
+    DATABASE_URL="postgresql://postgres:<password>@<host>:5432/postgres"
+    PORT=4000
+
+  Do NOT commit the .env file. It contains secrets.
+
+STEP 3: Run Prisma Migrations
+  npx prisma migrate dev --name init
+
+  This creates the base tables (Report, Resource, Allocation) with enums.
+
+  If a manual PostGIS migration exists at prisma/migrations/add_postgis_geometry/:
+    npx prisma migrate dev --name add_postgis_geometry
+
+  This enables the PostGIS extension, adds geometry columns, and creates
+  GIST spatial indexes.
+
+STEP 4: Generate Prisma Client (for seeding only)
+  npx prisma generate
+
+STEP 5: Seed the Database
+  npx prisma db seed
+
+  Inserts 20 resources around Mumbai with various types and capacities.
+
+STEP 6: Start the Development Server
+  npm run dev
+
+  The server starts on http://localhost:4000 (or the PORT from .env).
+
+STEP 7: Run the Simulation Script (optional)
+  In a separate terminal:
+    cd server
+    npx tsx scripts/simulate.ts
+
+  This runs a 7-step end-to-end workflow test:
+    1. Submit 3 reports → triggers auto-verification
+    2. Fetch incidents → find verified report
+    3. Get resource shortlist
+    4. Confirm allocation (with authority token)
+    5. Update resource status to at_scene (with authority token)
+    6. Resolve incident (with authority token)
+    7. Verify citizen status view
+
+AVAILABLE SCRIPTS (package.json):
+  npm run dev             Start dev server with hot reload (tsx watch)
+  npm run build           Compile TypeScript to dist/
+  npm start               Run compiled JS from dist/
+  npm run prisma:generate Generate Prisma client
+  npm run prisma:migrate  Run Prisma migrations
+  npm run prisma:seed     Seed the database
+
+
+6. SECURITY MEASURES
+================================================================================
+
+6.1  AUTHORITY TOKEN MIDDLEWARE (requireAuthority)
+  File: server/src/middlewares/auth.ts
+
+  Protected endpoints:
+    - POST /api/allocations/confirm
+    - PUT  /api/resources/:id/status
+    - POST /api/incidents/:id/resolve
+
+  Mechanism:
+    - Checks for the request header: x-authority-token
+    - Compares against the hardcoded value: "demo-authority-token"
+    - Returns 401 { "error": "Unauthorized" } if missing or incorrect.
+
+  Note: This is a demo-grade token. See Section 7 for limitations.
+
+6.2  INPUT VALIDATION
+  Report creation (reportService.ts):
+    - session_id: required, non-empty string
+    - type: must be one of the 6 allowed enum values
+    - lat: must be a number in range [-90, 90]
+    - lng: must be a number in range [-180, 180]
+    - description: optional, max 500 characters
+
+  Allocation confirmation (allocationService.ts):
+    - report_id and resource_id: required, non-empty strings
+
+  Resource status update (resourceService.ts):
+    - status: must be one of: en_route, at_scene, available
+
+6.3  DUPLICATE / RAPID ACTION GUARDS
+  Allocation confirmation:
+    - Rejects if the report status is already "in_progress" or "resolved"
+      (prevents double-dispatch).
+
+  Incident resolution:
+    - Explicitly checks for "resolved" status before proceeding.
+    - Only proceeds if the report is "in_progress".
+
+  Resource status transitions:
+    - Enforces a strict state machine:
+        available → en_route → at_scene → available
+    - Rejects any transition not in this cycle.
+
+6.4  CAPACITY SAFETY
+  Allocation confirmation:
+    - Pre-transaction check: capacity_used < capacity_total
+    - In-transaction double-check: SELECT ... FOR UPDATE locks the row and
+      re-validates capacity before incrementing (prevents race conditions).
+
+  Incident resolution:
+    - Only decrements capacity_used if currently > 0 (WHERE clause).
+    - Uses GREATEST(capacity_used - 1, 0) as an additional SQL-level guard
+      to ensure the value never goes negative.
+
+6.5  SQL INJECTION PREVENTION
+  All database queries use parameterized placeholders ($1, $2, ...) via the
+  pg library. No string concatenation is used to build SQL. User input is
+  never interpolated directly into query strings.
+
+6.6  TRANSACTIONS
+  Multi-table mutations (allocation confirmation, incident resolution) use
+  explicit BEGIN / COMMIT / ROLLBACK with a dedicated client from the pool.
+  Errors trigger ROLLBACK, and the client is always released in a finally block.
+
+6.7  FILE UPLOAD SAFETY
+  - Multer is configured with disk storage in server/uploads/.
+  - Filenames are generated server-side using timestamps + random numbers,
+    preventing original filename injection.
+  - Only a single file is accepted per request (upload.single("photo")).
+
+
+7. KNOWN LIMITATIONS & SECURITY CONCERNS
+================================================================================
+
+7.1  NO REAL AUTHENTICATION
+  The authority token is hardcoded as "demo-authority-token" in the middleware
+  source code. There is no user registration, login, session management, JWT,
+  or OAuth. Anyone who knows the token string has full authority access. This
+  is acceptable for a demo/hackathon but MUST be replaced with proper
+  authentication (e.g., JWT + refresh tokens, OAuth2) before production use.
+
+7.2  SESSION_ID SPOOFING (TRUST LAYER VULNERABILITY)
+  The trust layer auto-verifies reports when 3+ distinct session_id values
+  submit the same disaster type within 200m / 15 minutes. Since session_id
+  is a client-provided string (typically from browser localStorage), a
+  malicious user could:
+    - Clear localStorage and generate a new session_id
+    - Repeat 3 times to force-verify a false report
+  Mitigation for production: tie session_id to device fingerprinting, IP
+  rate limiting, or require SMS/OTP verification.
+
+7.3  NO RATE LIMITING
+  There is no rate limiting on any endpoint. A malicious client could:
+    - Flood POST /api/reports with spam reports
+    - Brute-force the authority token (though it's a fixed string)
+    - DDoS the server with rapid requests
+  Mitigation: add express-rate-limit middleware with appropriate windows.
+
+7.4  CORS CONFIGURED AS WILDCARD
+  Both Express CORS and Socket.IO CORS are set to origin: '*', allowing
+  requests from any domain. This is fine for development but should be
+  restricted to known frontend domains in production.
+
+7.5  NO FILE TYPE / SIZE VALIDATION ON UPLOADS
+  Multer is configured without file size limits or MIME type filtering.
+  A user could upload:
+    - Very large files (potential disk exhaustion)
+    - Non-image files (executables, scripts)
+  Mitigation: add multer fileFilter for image MIME types and limits.maxFileSize.
+
+7.6  UPLOADED FILES SERVED STATICALLY
+  The /uploads path serves files directly via express.static(). If a malicious
+  file were uploaded (e.g., an HTML file), it could be served and potentially
+  execute in a browser context. Mitigation: restrict Content-Type headers,
+  validate file types, or serve uploads from a CDN/object storage.
+
+7.7  NO HELMET OR SECURITY HEADERS
+  The server does not use the helmet middleware, so standard security headers
+  (X-Content-Type-Options, X-Frame-Options, Strict-Transport-Security, etc.)
+  are not set. Add helmet as middleware for production.
+
+7.8  ERROR STACK TRACES EXPOSED
+  Express default error handler and body-parser errors can expose stack traces
+  in responses (visible in the JSON parse error HTML page). Production should
+  use a custom error handler that strips stack traces.
+
+7.9  NO HTTPS
+  The server runs on plain HTTP. All data including the authority token is
+  transmitted in cleartext. Production must use HTTPS (TLS termination at
+  load balancer or reverse proxy).
+
+7.10 DATABASE CONNECTION STRING IN ENVIRONMENT
+  The DATABASE_URL contains credentials. It is loaded via dotenv from .env,
+  which should never be committed. The .env file is excluded via .gitignore.
+
+7.11 NO PAGINATION ON LIST ENDPOINTS
+  GET /api/incidents and GET /api/reports return all rows without pagination.
+  With a large dataset, this could cause memory issues and slow responses.
+  Add LIMIT/OFFSET or cursor-based pagination for production.
+
+7.12 HARDCODED confirmed_by VALUE
+  The allocation confirmation always sets confirmed_by to 'authority-1'.
+  In a real system, this should come from the authenticated user's identity.
+
+7.13 NO INPUT SANITIZATION ON description FIELD
+  While description length is capped at 500 characters, there is no
+  sanitization for HTML/script tags. If descriptions are rendered in a
+  frontend without escaping, this could lead to stored XSS. The frontend
+  must escape or sanitize all user-provided text before rendering.
+
+7.14 GET /api/resources ENDPOINT MISSING
+  The user-facing requirements mention a GET /api/resources endpoint, but
+  it is not implemented. Only PUT /api/resources/:id/status exists.
+
+
+8. DEMO SAFETY STATEMENT
+================================================================================
+
+This backend is SAFE AND SUITABLE FOR DEMO / HACKATHON USE with the following
+understanding:
+
+  ✓  All SQL queries use parameterized placeholders — no SQL injection risk.
+  ✓  File uploads use server-generated filenames — no path traversal risk.
+  ✓  Transactions with ROLLBACK ensure data consistency.
+  ✓  Capacity guards prevent negative values.
+  ✓  State machine prevents invalid resource transitions.
+  ✓  Authority endpoints are gated behind a token header.
+  ✓  Input validation rejects malformed coordinates and oversized descriptions.
+  ✓  All async errors are caught and returned as structured JSON.
+
+For production deployment, address the items listed in Section 7 above.
+
+================================================================================
+  END OF DOCUMENT
+================================================================================
