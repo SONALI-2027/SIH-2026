@@ -1,0 +1,102 @@
+// Prisma schema for Disaster Management Platform
+// PostgreSQL with PostGIS (Supabase)
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ──────────────────────────────────────────────
+// Enums
+// ──────────────────────────────────────────────
+
+enum ReportType {
+  flood
+  cyclone
+  landslide
+  medical
+  fire
+  other
+}
+
+enum ReportStatus {
+  unverified
+  verified
+  in_progress
+  resolved
+}
+
+enum ResourceType {
+  shelter
+  rescue_team
+  medical_van
+  boat
+  food_stock
+  ambulance
+  fire_engine
+}
+
+enum ResourceStatus {
+  available
+  en_route
+  at_scene
+}
+
+enum AllocationStatus {
+  recommended
+  confirmed
+  en_route
+  at_scene
+  resolved
+}
+
+// ──────────────────────────────────────────────
+// Models
+// ──────────────────────────────────────────────
+
+model Report {
+  id          String       @id @default(uuid())
+  session_id  String
+  type        ReportType
+  description String?
+  photo_url   String?
+  
+  status      ReportStatus @default(unverified)
+  created_at  DateTime     @default(now())
+
+  allocations Allocation[]
+}
+
+model Resource {
+  id             String         @id @default(uuid())
+  name           String
+  type           ResourceType
+  capacity_total Int
+  capacity_used  Int            @default(0)
+  
+  status         ResourceStatus @default(available)
+  disaster_types String[]
+  created_at     DateTime       @default(now())
+
+  allocations Allocation[]
+}
+
+model Allocation {
+  id             String           @id @default(uuid())
+  report_id      String
+  resource_id    String
+  status         AllocationStatus @default(recommended)
+  recommended_at DateTime         @default(now())
+  confirmed_at   DateTime?
+  confirmed_by   String?
+  created_at     DateTime         @default(now())
+
+  report   Report   @relation(fields: [report_id], references: [id])
+  resource Resource @relation(fields: [resource_id], references: [id])
+
+  @@unique([report_id, resource_id])
+}
