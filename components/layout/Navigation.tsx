@@ -8,5 +8,5 @@ const items = [{ href: "/admin/profile", label: "Profile", icon: CircleUserRound
 
 export function Navigation() {
   const pathname = usePathname();
-  return <><aside className="sidebar">{items.map(({ href, label, icon: Icon }) => <Link key={href} href={href} className={`nav-link ${pathname === href ? "active" : ""}`}><Icon size={18} /><span>{label}</span></Link>)}</aside><nav className="mobile-nav">{items.map(({ href, label, icon: Icon }) => <Link key={href} href={href} className={pathname === href ? "active" : ""}><Icon size={19} /><span>{label}</span></Link>)}</nav></>;
+  return <><aside className="sidebar">{items.map(({ href, label, icon: Icon }) => <Link key={href} href={href} className={`nav-link ${pathname === href ? "active" : ""}`}><Icon size={18} /><span>{label}</span></Link>)}</aside><nav className="mobile-nav">{items.map(({ href, label, icon: Icon }) => <Link key={href} href={href} className={pathname === href ? "active" : ""}><Icon size={18} /><span>{label}</span></Link>)}</nav></>;
 }
